@@ -1,0 +1,655 @@
+﻿AppType=JavaFX
+Build1=Default,b4j.example
+File1=beep.mp3
+File10=pzim3x5b.ttf
+File11=ship2.png
+File12=smoke.png
+File13=thruster.mp3
+File2=crash0.png
+File3=crash1.png
+File4=crash2.png
+File5=crash3.png
+File6=crash4.png
+File7=crash5.png
+File8=explosion.mp3
+File9=pzim3x5.ttf
+FileGroup1=Default Group
+FileGroup10=Default Group
+FileGroup11=Default Group
+FileGroup12=Default Group
+FileGroup13=Default Group
+FileGroup2=Default Group
+FileGroup3=Default Group
+FileGroup4=Default Group
+FileGroup5=Default Group
+FileGroup6=Default Group
+FileGroup7=Default Group
+FileGroup8=Default Group
+FileGroup9=Default Group
+Group=Default Group
+Library1=jcore
+Library2=jfx
+Library3=jreflection
+Library4=jxui
+Library5=javaobject
+NumberOfFiles=13
+NumberOfLibraries=5
+NumberOfModules=0
+Version=9.3
+@EndOfDesignText@
+'### LUNAR LANDER ###
+'created by Ilan Tal using B4j
+'website: www.sagital.net
+'github: https://github.com/ilan1204
+'####################
+#Region Project Attributes 
+	#MainFormWidth: 1400
+	#MainFormHeight: 800 
+#End Region
+
+Sub Process_Globals
+	Type vec(x As Float, y As Float)
+	Type size(width As Float, height As Float)
+	Type spaceship(shipBmp As B4XBitmap, smokeBmp As B4XBitmap, position As vec, size As size, kapput As Boolean, speed As vec, angle As Float)
+	Type landingLine(pointA As vec, pointB As vec, multiply As Float)
+	Type terrain(position As vec, vertices As List, landingPlaces As List)
+	Type line(pointA As vec, pointB As vec)
+	Type camera(position As vec, scale As Float)
+	Type crashBitmap(bmp As B4XBitmap, pos As vec, speed As vec, angle As Float)
+	Type star(pos As vec, alpha As Int)
+	Private fx As JFX
+	Private MainForm As Form
+	Private xui As XUI
+	Private beep, thruster, explosion As MediaPlayer
+	Private isBeeping, isAccelerating As Boolean
+	Private cnv As B4XCanvas
+	Private render As Timer
+	Private vpW, vpH As Float
+	Private gameover, shipkaputt, gamestarted, drawCollisionLines, landed As Boolean 'ignore
+	Private gravity As Float = 0.0075
+	Private mainTerrain As terrain
+	Private ship As spaceship
+	Private keyList, shipCollideLines, crashList, starsList As List 'shipCollidePoints
+	Private fuel, score, medeadCount, landedCount, frames As Int
+	Private startTime As Long
+	Private myCam As camera
+	Private pixelFont, pixelFontBold As B4XFont
+End Sub
+
+Sub AppStart (Form1 As Form, Args() As String)
+	MainForm = Form1
+	MainForm.Show
+	MainForm.Resizable = False
+	MainForm.Title = "Lunar Lander"
+	keyList.Initialize
+	shipCollideLines.Initialize
+	starsList.Initialize
+	crashList.Initialize
+	pixelFont = fx.LoadFont(File.DirAssets,"pzim3x5.ttf",30)
+	pixelFontBold = fx.LoadFont(File.DirAssets,"pzim3x5b.ttf",30)
+	DateTime.TimeFormat = "mm:ss"
+	Wait For MainForm_Resize (Width As Double, Height As Double)
+	vpW = MainForm.RootPane.Width
+	vpH = MainForm.RootPane.Height
+	cnv.Initialize(MainForm.RootPane)
+	render.Initialize("render", 25)
+	render.Enabled = True
+	initSounds
+	AddKeyPressedListener
+	MainForm.RootPane.RequestFocus
+End Sub
+
+Sub AddKeyPressedListener
+	Dim r As Reflector
+	r.Target = MainForm.RootPane
+	r.AddEventFilter("keypressed", "javafx.scene.input.KeyEvent.ANY")
+End Sub
+
+Sub KeyPressed_Filter (e As Event)
+	Dim jo As JavaObject = e
+	Dim EventType As String = jo.RunMethodJO("getEventType", Null).RunMethod("getName", Null)
+	Dim keycode As String
+	If EventType = "KEY_PRESSED" Then
+		keycode = jo.RunMethod("getCode", Null)
+		If keycode = "ENTER" Then 
+			If gamestarted = False Then 
+				resetgame(True)
+				gamestarted = True
+			End If
+		else if keycode = "ESCAPE" Then
+			gamestarted = False
+		Else 
+			Dim pos As Int = keyList.IndexOf(keycode)
+			If pos = -1 Then keyList.Add(keycode)				
+		End If
+	else if EventType = "KEY_RELEASED" Then
+		keycode = jo.RunMethod("getCode", Null)
+		Dim pos As Int = keyList.IndexOf(keycode)
+		If pos > -1 Then keyList.RemoveAt(pos)
+		If keycode = "UP" Then 
+			isAccelerating = False
+			thruster.Pause
+		End If
+	End If
+End Sub
+
+Private Sub initSounds
+	beep.Initialize("beep",xui.FileUri(File.DirAssets,"beep.mp3"))
+	beep.CycleCount = -1
+	thruster.Initialize("thruster",xui.FileUri(File.DirAssets,"thruster.mp3"))
+	thruster.CycleCount = -1
+	explosion.Initialize("explosion",xui.FileUri(File.DirAssets,"explosion.mp3"))
+	explosion.CycleCount = 1
+End Sub
+
+Private Sub resetgame(fullReset As Boolean)
+	gameover = False
+	shipkaputt = False
+	drawCollisionLines = False 'True 'for testing only
+	landed = False
+	isBeeping = False
+	isAccelerating = False
+	myCam.Initialize
+	myCam.position = Createvec(0,0)
+	myCam.scale = 1
+	If fullReset Then beep.Pause
+	If fullReset Then thruster.Pause
+	If fullReset Then score = 0
+	If fullReset Then startTime = DateTime.Now
+	If fullReset Then fuel = 750
+	medeadCount = 150
+	landedCount = 100
+	'create terrain
+	createTerrain 'recreate only if full restart
+	'create Ship
+	ship.Initialize
+	ship.shipBmp = xui.LoadBitmap(File.DirAssets,"ship2.png")
+	ship.smokeBmp = xui.LoadBitmap(File.DirAssets,"smoke.png")
+	ship.kapput = False
+	ship.speed = Createvec(0,0)
+	ship.position = Createvec(Rnd(vpW*0.3,vpW*0.6),vpH*0.05)
+	ship.angle = 0
+	ship.size = Createsize(vpW*0.02,vpH*0.03)
+	'loadcrashassets
+	crashList.Clear
+	For i = 0 To 5
+		crashList.Add(CreatecrashBitmap(xui.LoadBitmap(File.DirAssets,$"crash${i}.png"$),Createvec(0,0),Createvec(0,0),0))
+	Next
+	'create ship collision points
+	shipCollideLines.Add(Createline(Createvec(-ship.size.width/2,ship.size.height/2),Createvec(ship.size.width/2,ship.size.height/2)))
+	shipCollideLines.Add(Createline(Createvec(-ship.size.width/2,ship.size.height*0.4),Createvec(-ship.size.width*0.05,-ship.size.height*0.4)))
+	shipCollideLines.Add(Createline(Createvec(ship.size.width*0.05,-ship.size.height*0.4),Createvec(ship.size.width/2,ship.size.height*0.4)))
+	shipCollideLines.Add(Createline(Createvec(0,-ship.size.height*0.4),Createvec(0,ship.size.height*0.4)))
+	'createStars
+	starsList.Clear
+	For i = 0 To 99
+		starsList.Add(Createstar(Createvec(Rnd(vpW*0.025,vpW*0.975),Rnd(vpH*0.025,vpH*0.5)),Rnd(25,255)))
+	Next		
+End Sub
+
+Private Sub createTerrain
+	mainTerrain.Initialize
+	mainTerrain.vertices.Initialize
+	mainTerrain.landingPlaces.Initialize
+	mainTerrain.position = Createvec(0,0)
+	Dim x = 0, y = 0 As Float
+	Dim startingY As Float = Rnd(vpH*0.6,vpH*0.95)
+	Dim stepX1 = vpW*0.00625, stepX2 = vpW*0.0125, stepY = startingY As Float
+	Dim landingplaces = Rnd(4,9), xStepInt = 1, multiply = 0, landingSpace = 0 As Int
+	Dim creatingLanding, firstLandingPointCreated As Boolean
+	landingSpace = Floor(((vpW/stepX1)/landingplaces)*0.65)
+	mainTerrain.vertices.Add(Createvec(0,0)) 'Left Wall
+	Do While x < vpW
+		If creatingLanding Then 
+			If firstLandingPointCreated = False Then
+				firstLandingPointCreated = True
+				Dim landingL As landingLine
+				landingL.Initialize
+				landingL.pointA = Createvec(x,y)
+			Else 
+				Dim moveX As Float
+				Select multiply
+					Case 2
+						moveX = stepX2*2.5
+					Case 4
+						moveX = stepX2*1.5
+					Case 5
+						moveX = stepX2*0.675
+				End Select
+				x = x+moveX
+				landingL.multiply = multiply
+				landingL.pointB = Createvec(x,y)
+				mainTerrain.landingPlaces.Add(landingL)
+				creatingLanding = False
+			End If
+			mainTerrain.vertices.Add(Createvec(x,y))
+			stepY = getY(y,stepX2,1)
+			If Rnd(0,5) = 2 Then x = x+stepX2 Else x = x+stepX1
+		Else
+			y = y+stepY	
+			mainTerrain.vertices.Add(Createvec(x,y))
+			stepY = getY(y,stepX2,0)
+			If Rnd(0,4) = 2 Then x = x+stepX2 Else x = x+stepX1
+		End If
+		xStepInt = xStepInt + 1
+		If creatingLanding Then Continue
+		If landingplaces > 0 Then 
+			If xStepInt Mod landingSpace = 0 Then
+				landingplaces = landingplaces - 1
+				creatingLanding = True
+				firstLandingPointCreated = False
+				Select Rnd(0,3)
+					Case 0
+						If multiply = 2 Then multiply = 4 Else multiply = 2
+					Case 1
+						If multiply = 4 Then multiply = 5 Else multiply = 4
+					Case 2
+						If multiply = 5 Then multiply = 2 Else multiply = 5
+				End Select					
+			End If
+		End If
+	Loop
+	mainTerrain.vertices.Add(Createvec(vpW,y)) 'Fill last gap to right wall
+	mainTerrain.vertices.Add(Createvec(vpW,0)) 'Right Wall
+End Sub
+ 
+Private Sub getY(y As Float,stepX2 As Float,minStart As Int) As Float
+	If y < vpH*0.6 Then
+		Return Rnd(minStart,4)*stepX2
+	Else if y > vpH*0.9 Then
+		Return -(Rnd(minStart,4)*stepX2)
+	Else
+		If Rnd(0,2) = 1 Then Return Rnd(minStart,4)*stepX2 Else Return -(Rnd(minStart,4)*stepX2)
+	End If
+End Sub
+ 
+Sub render_Tick
+	frames = frames + 1
+	cnv.DrawRect(cnv.TargetRect,xui.Color_Black,True,0)
+	If Not(gamestarted) Then 
+		drawstartgame
+		Return
+	End If
+	updatecameraPosition
+	moveship
+	checkcollision
+	drawstars
+	drawBeepAlarm
+	drawterrain
+	drawship
+	drawstats
+	drawcrash
+	checkiflanded
+End Sub
+
+Private Sub drawstars
+	For Each s As star In starsList
+		If frames Mod 3 = 0 Then s.alpha = (s.alpha+5) Mod 255
+		cnv.DrawCircle(s.pos.x*myCam.scale,s.pos.y*myCam.scale,1,xui.Color_ARGB(s.alpha,255,255,255),True,0)
+	Next
+End Sub
+
+Private Sub drawBeepAlarm
+	If fuel <= 250 Then
+		If Not(isBeeping)Then
+			isBeeping = True
+			beep.Position = 0
+			beep.Play 'start beeping
+		End If
+		If Floor(frames/20) Mod 2 = 0 Then cnv.DrawText("LOW FUEL",vpW/2,vpH*0.35,xui.CreateFont2(pixelFont,36),xui.Color_White,"CENTER")
+	Else
+		stopBeeping
+	End If
+End Sub
+
+Private Sub drawstartgame
+	stopBeeping
+	cnv.DrawText("LUNAR LANDER",vpW/2,vpH*0.3,xui.CreateFont2(pixelFontBold,92),xui.Color_White,"CENTER")
+	If Floor(frames/20) Mod 2 = 0 Then cnv.DrawText("PRESS TO START THE GAME",vpW/2,vpH*0.5,xui.CreateFont2(pixelFont,36),xui.Color_White,"CENTER") 'blink text
+	cnv.DrawText("Created by Ilan Tal using the awesome free tool B4J - www.b4x.com",vpW/2,vpH*0.9,xui.CreateFont2(pixelFont,24),xui.Color_White,"CENTER")
+End Sub
+
+Private Sub updatecameraPosition
+	Dim nearToTerrain As Boolean
+	For Each vertex As vec In mainTerrain.vertices
+		If distance(ship.position.x,vertex.x,ship.position.y,vertex.y) < vpH*0.125 Then 
+			nearToTerrain = True
+			Exit
+		End If
+	Next
+	If nearToTerrain Then 
+		myCam.scale = 2.5
+		myCam.position = Createvec(vpW/2,vpH/2)
+	Else 
+		myCam.scale = 1
+		myCam.position = Createvec(0,0)	
+	End If
+End Sub
+
+Private Sub drawterrain
+	Dim firstVertex As vec = mainTerrain.vertices.Get(0)
+	For i = 1 To mainTerrain.vertices.Size-1
+		Dim nextVertex As vec = mainTerrain.vertices.Get(i)
+		If myCam.scale > 1 Then 
+			Dim x1 As Float = myCam.position.x-((ship.position.x+(ship.size.width/2)-firstVertex.x)*myCam.scale)
+			Dim y1 As Float = myCam.position.y-((ship.position.y+(ship.size.height)-firstVertex.y)*myCam.scale)
+			Dim x2 As Float = myCam.position.x-((ship.position.x+(ship.size.width/2)-nextVertex.x)*myCam.scale)
+			Dim y2 As Float = myCam.position.y-((ship.position.y+(ship.size.height)-nextVertex.y)*myCam.scale)
+			If i > 1 And i < mainTerrain.vertices.Size-1 Then
+				cnv.DrawLine(x1,y1,x2,y2,xui.Color_White,1)
+			Else if i = 1 Then
+				cnv.DrawLine(x1,0,x2,vpH,xui.Color_ARGB(150,255,0,0),1)
+			Else 
+				cnv.DrawLine(x1,0,x2,vpH,xui.Color_ARGB(150,255,0,0),1)
+			End If
+		Else
+			If i > 1 And i < mainTerrain.vertices.Size-1 Then cnv.DrawLine(firstVertex.x,firstVertex.y,nextVertex.x,nextVertex.y,xui.Color_White,1)
+		End If
+		firstVertex = Createvec(nextVertex.x,nextVertex.y)
+	Next
+	For Each landingPlace As landingLine In mainTerrain.landingPlaces
+		If myCam.scale > 1 Then
+			Dim x1 As Float = myCam.position.x-((ship.position.x+(ship.size.width/2)-(landingPlace.pointA.x+((landingPlace.pointB.x-landingPlace.pointA.x)*0.35)))*myCam.scale)
+			Dim y1 As Float = myCam.position.y-((ship.position.y+(ship.size.height/2)-(landingPlace.pointA.y+(vpH*0.0125)))*myCam.scale)
+			cnv.DrawText($"X${NumberFormat2(landingPlace.multiply,1,0,0,False)}"$,x1,y1,xui.CreateFont2(pixelFont,18*myCam.scale),xui.Color_White,"CENTER")
+		Else
+			cnv.DrawText($"X${NumberFormat2(landingPlace.multiply,1,0,0,False)}"$,landingPlace.pointA.x+((landingPlace.pointB.x-landingPlace.pointA.x)*0.35),landingPlace.pointA.y+(vpH*0.0225),xui.CreateFont2(pixelFont,18*myCam.scale),xui.Color_White,"CENTER")
+		End If
+	Next
+End Sub
+
+Private Sub drawship
+	If ship.kapput = False Then
+		If myCam.scale > 1 Then 
+			cnv.DrawBitmapRotated(ship.shipBmp,getRect(myCam.position.x-((ship.size.width/2)*myCam.scale),myCam.position.y-((ship.size.height)*myCam.scale),ship.size.width*myCam.scale,ship.size.height*myCam.scale),ship.angle)
+		Else 
+			cnv.DrawBitmapRotated(ship.shipBmp,getRect(ship.position.x,ship.position.y,ship.size.width*myCam.scale,ship.size.height*myCam.scale),ship.angle)
+		End If		
+	End If
+End Sub
+
+Private Sub moveship
+	If ship.kapput Or landed Then Return 'dont move ship if already dead or landed
+	For Each keycode As String In keyList
+		If keycode = "RIGHT" Then ship.angle = ship.angle + 0.5
+		If keycode = "LEFT" Then ship.angle = ship.angle - 0.5
+		If keycode = "UP" Then
+			If frames Mod 3 = 0 Then fuel = Max(0,fuel-1)
+			If fuel > 0 Then
+				If Not(isAccelerating) Then
+					isAccelerating = True
+					thruster.Position = 0
+					thruster.Play
+				End If
+				ship.speed.x = ship.speed.x+(SinD(ship.angle)*0.015)
+				ship.speed.y = ship.speed.y-(CosD(ship.angle)*0.015)
+				If myCam.scale > 1 Then
+					cnv.DrawBitmapRotated(ship.smokeBmp,getRect(myCam.position.x-((ship.size.width/2)*myCam.scale),myCam.position.y-((ship.size.height+(ship.size.height))*myCam.scale),ship.size.width*myCam.scale,(ship.size.height*3)*myCam.scale),ship.angle)
+				Else
+					cnv.DrawBitmapRotated(ship.smokeBmp,getRect(ship.position.x,ship.position.y-ship.size.height,ship.size.width,ship.size.height*3),ship.angle)
+				End If				
+			End If
+		End If
+	Next
+	'limit speed
+	ship.speed.y = ship.speed.y+gravity
+	ship.speed.x = Min(Max(ship.speed.x,-1),1.5)
+	ship.speed.y = Min(Max(ship.speed.y,-0.5),1.5)
+	'update position
+	ship.position.x = ship.position.x + ship.speed.x
+	ship.position.y = ship.position.y + ship.speed.y		
+End Sub
+ 
+Private Sub checkcollision
+	If ship.kapput Or landed Then Return 'dont check if already dead or landed
+	Dim v1 As vec = mainTerrain.vertices.Get(0)
+	For i = 1 To mainTerrain.vertices.Size-1
+		Dim v2 As vec = mainTerrain.vertices.Get(i)
+		Dim Center As vec = Createvec(ship.position.x+(ship.size.width/2), ship.position.y+(ship.size.height/2))
+		Dim checkIfOnLanding As Boolean = False 
+		Dim points As Int 
+		For Each landLine As landingLine In  mainTerrain.landingPlaces
+			If landLine.pointA.x = v1.x And landLine.pointA.y = v1.y And landLine.pointB.x = v2.x And landLine.pointB.y = v2.y Then 
+				points = 100 *landLine.multiply
+				checkIfOnLanding = True 
+				Exit
+			End If
+		Next
+		For Each line As line In shipCollideLines
+			Dim pointA As vec = Createvec(Center.x + (line.pointA.x * CosD(ship.angle)) - (line.pointA.y * SinD(ship.angle)), Center.y + (line.pointA.x * SinD(ship.angle)) + (line.pointA.y * CosD(ship.angle)))
+			Dim pointB As vec = Createvec(Center.x + (line.pointB.x * CosD(ship.angle)) - (line.pointB.y * SinD(ship.angle)), Center.y + (line.pointB.x * SinD(ship.angle)) + (line.pointB.y * CosD(ship.angle)))
+			If lineHitLine(v1.x,v1.y,v2.x,v2.y,pointA.x,pointA.y,pointB.x,pointB.y) Then
+				If drawCollisionLines Then 'if drawcollision enabled then draw the lines that collide
+					If myCam.scale > 1 Then
+						Dim x1 As Float = myCam.position.x-((ship.position.x-pointA.x+(ship.size.width/2))*myCam.scale)
+						Dim y1 As Float = myCam.position.y-((ship.position.y-pointA.y+(ship.size.height))*myCam.scale)
+						Dim x2 As Float = myCam.position.x-((ship.position.x-pointB.x+(ship.size.width/2))*myCam.scale)
+						Dim y2 As Float = myCam.position.y-((ship.position.y-pointB.y+(ship.size.height))*myCam.scale)
+						cnv.DrawLine(x1,y1,x2,y2,xui.Color_Red,1)
+					Else
+						cnv.DrawLine(pointA.x,pointA.y,pointB.x,pointB.y,xui.Color_Red,1)
+					End If
+				End If
+				ship.kapput = Abs(ship.angle) > 3 
+				ship.kapput = Abs(ship.speed.x) > 0.25
+				ship.kapput = Abs(ship.speed.y) > 0.25
+				If checkIfOnLanding Then
+					If ship.kapput Then
+						loadcrash
+						Return
+					Else
+						landed = True
+						score = score + points
+						fuel = fuel + 75
+						Return
+					End If
+				Else 
+					loadcrash
+					Return
+				End If
+			Else 
+				If drawCollisionLines Then
+					If myCam.scale > 1 Then  'if drawcollision enabled then draw the triangle
+						Dim x1 As Float = myCam.position.x-((ship.position.x-pointA.x+(ship.size.width/2))*myCam.scale)
+						Dim y1 As Float = myCam.position.y-((ship.position.y-pointA.y+(ship.size.height))*myCam.scale)
+						Dim x2 As Float = myCam.position.x-((ship.position.x-pointB.x+(ship.size.width/2))*myCam.scale)
+						Dim y2 As Float = myCam.position.y-((ship.position.y-pointB.y+(ship.size.height))*myCam.scale)
+						cnv.DrawLine(x1,y1,x2,y2,xui.Color_Green,1)
+					Else
+						cnv.DrawLine(pointA.x,pointA.y,pointB.x,pointB.y,xui.Color_Green,1)	
+					End If
+				End If
+			End If
+		Next
+		v1 = Createvec(v2.x,v2.y)
+	Next
+End Sub
+
+Private Sub lineHitLine(x1 As Float, y1 As Float, x2 As Float, y2 As Float, x3 As Float, y3 As Float, x4 As Float, y4 As Float) As Boolean
+	Dim uA As Float = ((x4-x3)*(y1-y3) - (y4-y3)*(x1-x3)) / ((y4-y3)*(x2-x1) - (x4-x3)*(y2-y1))
+	Dim uB As Float = ((x2-x1)*(y1-y3) - (y2-y1)*(x1-x3)) / ((y4-y3)*(x2-x1) - (x4-x3)*(y2-y1))
+	If uA >= 0 And uA <= 1 And uB >= 0 And uB <= 1 Then 
+		Return True
+	Else 
+		Return False	 
+	End If
+End Sub
+
+Private Sub drawstats
+	cnv.DrawText("ROTATION",vpW*0.7,vpH*0.05,xui.CreateFont2(pixelFont,24),xui.Color_White,"LEFT")
+	cnv.DrawText("HORIZONTAL SPEED",vpW*0.7,vpH*0.085,xui.CreateFont2(pixelFont,24),xui.Color_White,"LEFT")
+	cnv.DrawText("VERTICAL SPEED",vpW*0.7,vpH*0.12,xui.CreateFont2(pixelFont,24),xui.Color_White,"LEFT")
+	cnv.DrawText(NumberFormat2(ship.angle,1,0,0,False),vpW*0.925,vpH*0.05,xui.CreateFont2(pixelFont,24),xui.Color_White,"LEFT")
+	cnv.DrawText(NumberFormat2((ship.speed.x)*10,1,0,0,False),vpW*0.925,vpH*0.085,xui.CreateFont2(pixelFont,24),xui.Color_White,"LEFT")
+	cnv.DrawText(NumberFormat2((ship.speed.y)*10,1,0,0,False),vpW*0.925,vpH*0.12,xui.CreateFont2(pixelFont,24),xui.Color_White,"LEFT")
+	cnv.DrawText("SCORE",vpW*0.05,vpH*0.05,xui.CreateFont2(pixelFont,24),xui.Color_White,"LEFT")
+	cnv.DrawText("TIME",vpW*0.05,vpH*0.085,xui.CreateFont2(pixelFont,24),xui.Color_White,"LEFT")
+	cnv.DrawText("FUEL",vpW*0.05,vpH*0.12,xui.CreateFont2(pixelFont,24),xui.Color_White,"LEFT")
+	cnv.DrawText(NumberFormat2(score,4,0,0,False),vpW*0.15,vpH*0.05,xui.CreateFont2(pixelFont,24),xui.Color_White,"LEFT")
+	cnv.DrawText(DateTime.Time(DateTime.Now-startTime),vpW*0.15,vpH*0.085,xui.CreateFont2(pixelFont,24),xui.Color_White,"LEFT")
+	If fuel > 100 Then 
+		cnv.DrawText(NumberFormat2(fuel,4,0,0,False),vpW*0.15,vpH*0.12,xui.CreateFont2(pixelFont,24),xui.Color_White,"LEFT")
+	else if fuel > 0 Then 
+		cnv.DrawText($"${NumberFormat2(fuel,4,0,0,False)} - WARNING"$,vpW*0.15,vpH*0.12,xui.CreateFont2(pixelFont,24),xui.Color_Red,"LEFT")
+	Else 
+		cnv.DrawText("NO FUEL",vpW*0.15,vpH*0.12,xui.CreateFont2(pixelFont,24),xui.Color_Red,"LEFT")
+	End If
+End Sub
+ 
+Private Sub loadcrash
+	'control sound SFX
+	stopBeeping
+	stopThruster
+	explosion.Position = 0
+	explosion.Play
+	'create crash
+	For Each crashBmp As crashBitmap In crashList
+		crashBmp.pos = Createvec(ship.position.x,ship.position.y)
+		crashBmp.angle = ship.angle
+		crashBmp.speed = Createvec(RandomNumber(-2,2,1,True)*5,RandomNumber(-2,2,1,True)*5)
+		If myCam.scale > 1 Then 
+			Dim x1 As Float = myCam.position.x-((ship.size.width/2)*myCam.scale) + (crashBmp.speed.x * myCam.scale)
+			Dim y1 As Float = myCam.position.y-((ship.size.height)*myCam.scale) + (crashBmp.speed.y * myCam.scale)
+			crashBmp.pos = Createvec(x1,y1)			
+		Else 
+			crashBmp.pos = Createvec(ship.position.x,ship.position.y)
+		End If
+	Next
+	'reduce fuel after crash
+	fuel = Max(fuel-100,0)
+End Sub
+
+Private Sub drawcrash 
+	If ship.kapput Then
+		If medeadCount > 0 Then 
+			For Each crashBmp As crashBitmap In crashList
+				crashBmp.pos.x = crashBmp.pos.x + crashBmp.speed.x
+				crashBmp.pos.y = crashBmp.pos.y + crashBmp.speed.y
+				cnv.DrawBitmapRotated(crashBmp.bmp,getRect(crashBmp.pos.x,crashBmp.pos.y,ship.size.width*myCam.scale,ship.size.height*myCam.scale),crashBmp.angle)
+			Next
+			If medeadCount < 120 Then
+				If fuel > 0 Then
+					cnv.DrawText("SHIP DESTROYED",vpW/2,vpH*0.1,xui.CreateFont2(pixelFont,26),xui.Color_White,"CENTER")
+					cnv.DrawText("100 FUEL UNITS LOST",vpW/2,vpH*0.15,xui.CreateFont2(pixelFont,26),xui.Color_White,"CENTER")
+					cnv.DrawText("TRY TO LAND SMOOTHER",vpW/2,vpH*0.2,xui.CreateFont2(pixelFont,26),xui.Color_White,"CENTER")
+				Else
+					cnv.DrawText("GAME OVER",vpW/2,vpH*0.125,xui.CreateFont2(pixelFont,26),xui.Color_White,"CENTER")
+					cnv.DrawText("NO MORE FUEL LEFT",vpW/2,vpH*0.175,xui.CreateFont2(pixelFont,26),xui.Color_White,"CENTER")
+				End If
+			End If
+		Else 
+			If fuel = 0 Then gamestarted = False Else resetgame(False)
+		End If
+		medeadCount = medeadCount - 1
+	End If
+End Sub
+
+Private Sub checkiflanded
+	If landed Then
+		landedCount = landedCount - 1
+		If landedCount < 80 Then
+			cnv.DrawText("VERY NICE",vpW/2,vpH*0.125,xui.CreateFont2(pixelFont,26),xui.Color_White,"CENTER")
+			cnv.DrawText("SMOOTH LANDING",vpW/2,vpH*0.175,xui.CreateFont2(pixelFont,26),xui.Color_White,"CENTER")
+		End If
+		If landedCount < 0 Then resetgame(False)
+	End If
+End Sub
+
+private Sub distance(x1 As Float, x2 As Float, y1 As Float, y2 As Float) As Double 'ignore
+	Dim dX = x2 - x1 As Double
+	Dim dY = y2 - y1 As Double
+	Return Sqrt((dX * dX) + (dY * dY)) 'simple distance calculation
+End Sub
+
+Sub RandomNumber(Lowest As Double, Highest As Double, DecimalPlaces As Int, PreventZero As Boolean) As Double
+	Lowest  = Round(Lowest)
+	Highest = Round(Highest)
+	Dim Decimal As Double
+	If DecimalPlaces > 0 Then Decimal = (Rnd(0, Power(10, DecimalPlaces))) / Power(10, DecimalPlaces)
+	If Lowest = Highest Then
+		Return Lowest
+	Else
+		If Lowest > Highest Then
+			Dim TempValue = Lowest As Double
+			Lowest   = Highest
+			Highest  = TempValue
+		End If
+		Dim ReturnValue = Lowest + Rnd(0, Highest - Lowest) + Decimal As Double
+		If ReturnValue = 0 And PreventZero Then
+			Return RandomNumber(Lowest, Highest, DecimalPlaces, PreventZero)
+		Else
+			Return ReturnValue
+		End If
+	End If
+End Sub
+
+Private Sub MainForm_Touch (Action As Int, X As Float, Y As Float)
+	If Action = 0 Then 
+		If gamestarted = False Then
+			resetgame(True)
+			gamestarted = True
+		End If
+	End If
+End Sub
+
+Private Sub stopBeeping
+	If isBeeping Then
+		isBeeping = False
+		beep.Pause
+	End If
+End Sub
+
+Private Sub stopThruster
+	If isAccelerating Then
+		isAccelerating = False
+		thruster.Pause
+	End If
+End Sub
+
+Private Sub getRect(x As Float, y As Float, w As Float, h As Float) As B4XRect
+	Dim r As B4XRect
+	r.Initialize(x,y,x+w,y+h)
+	Return r
+End Sub
+
+Public Sub Createvec (x As Float, y As Float) As vec
+	Dim t1 As vec
+	t1.Initialize
+	t1.x = x
+	t1.y = y
+	Return t1
+End Sub
+
+Public Sub Createsize (width As Float, height As Float) As size
+	Dim t1 As size
+	t1.Initialize
+	t1.width = width
+	t1.height = height
+	Return t1
+End Sub
+
+Public Sub Createline (pointA As vec, pointB As vec) As line
+	Dim t1 As line
+	t1.Initialize
+	t1.pointA = pointA
+	t1.pointB = pointB
+	Return t1
+End Sub
+
+Public Sub CreatecrashBitmap (bmp As B4XBitmap, pos As vec, speed As vec, angle As Float) As crashBitmap
+	Dim t1 As crashBitmap
+	t1.Initialize
+	t1.bmp = bmp
+	t1.pos = pos
+	t1.speed = speed
+	t1.angle = angle
+	Return t1
+End Sub
+
+Public Sub Createstar (pos As vec, alpha As Int) As star
+	Dim t1 As star
+	t1.Initialize
+	t1.pos = pos
+	t1.alpha = alpha
+	Return t1
+End Sub
